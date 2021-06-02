@@ -69,7 +69,7 @@ class QuarkRule:
         """
         Minimum required confidence
 
-        :return: a a minimum required confidence level
+        :return: a minimum required confidence level
         """
         return self._minimum
 

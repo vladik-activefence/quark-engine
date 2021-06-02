@@ -6,6 +6,7 @@ import operator
 
 from quark.Evaluator.pyeval import PyEval
 from quark.Objects.analysis import QuarkAnalysis
+from quark.Objects.analysisbackup import QuarkAnalysisBackup
 from quark.Objects.apkinfo import Apkinfo
 from quark.utils import tools
 from quark.utils.colors import (
@@ -22,9 +23,10 @@ from quark.utils.out import print_info, print_success
 from quark.utils.output import output_parent_function_table, output_parent_function_json
 from quark.utils.weight import Weight
 import pandas as pd
-import os
 import numpy as np
-import time
+import copy
+import itertools
+
 
 MAX_SEARCH_LAYER = 3
 CHECK_LIST = "".join(["\t[" + "\u2713" + "]"])
@@ -220,26 +222,17 @@ class Quark:
 
         return state
 
-    def run(self, rule_obj):
-        """
-        Run the five levels check to get the y_score.
-
-        :param rule_obj: the instance of the RuleObject.
-        :return: None
-        """
-        self.quark_analysis.clean_result()
-        self.quark_analysis.crime_description = rule_obj.crime
-
-        # Level 1: Permissions check
+    def check_permissions(self, rule_obj):
         if self.apkinfo.ret_type == "DEX":
             rule_obj.check_item[self.PERMISSIONS_FOUND] = True
         elif set(rule_obj.permission).issubset(set(self.apkinfo.permissions)):
             rule_obj.check_item[self.PERMISSIONS_FOUND] = True
         else:
             # Exit if the level 1 stage check fails.
-            return
-        # Level 2: Check for functions existance
-        api_methods = rule_obj.api
+            return False
+        return True
+
+    def search_for_methods(self, api_methods, rule_obj):
         for api_method in api_methods:
             api_class_name = api_method["class"]
             api_method_name = api_method["method"]
@@ -251,16 +244,17 @@ class Quark:
         # ==> Make sure that we found all the functions
         if len(self.quark_analysis.level_2_result) < len(api_methods):
             # Exit if the level 2 stage check fails.
-            return
+            return False
         if len(api_methods) == 1:
             rule_obj.check_item[self.FUNCTIONS_FOUND] = True
             rule_obj.check_item[self.FUNCTIONS_SAME_PARENT] = True
             rule_obj.check_item[self.FUNCTIONS_SEQUENCE] = True
             rule_obj.check_item[self.FUNCTIONS_PARAMETERS_CONNECTED] = True
-            return
+            return False
         rule_obj.check_item[self.FUNCTIONS_FOUND] = True
-        
-        # Level 3: Same parent check
+        return True
+
+    def check_for_mutual_parent(self, rule_obj):
         mutual_parent_function_list = []
         for method in self.quark_analysis.level_2_result:
             api_xref_from = self.apkinfo.upperfunc(method)
@@ -271,7 +265,9 @@ class Quark:
             mutual_parent_function_list = self.find_intersection(api_xref_from, mutual_parent_function_list)
         if len(mutual_parent_function_list) > 0:
             rule_obj.check_item[self.FUNCTIONS_SAME_PARENT] = True
-        # Level 4: Sequence Check
+        return mutual_parent_function_list
+    
+    def check_for_sequence_and_params(self, mutual_parent_function_list, rule_obj):
         parents_list = list(mutual_parent_function_list)
         rule_obj.check_item[self.FUNCTIONS_SEQUENCE] = False
         for parent_function in parents_list:
@@ -292,12 +288,81 @@ class Quark:
                     if self.check_parameter(parent_function, first_wrapper, second_wrapper):
                         rule_obj.check_item[self.FUNCTIONS_PARAMETERS_CONNECTED] = True
                         self.quark_analysis.level_5_result.append(parent_function)
-        
             if sequence_found:
-                # print("Sequence found")
                 self.quark_analysis.level_4_result.append(parent_function)
                 rule_obj.check_item[self.FUNCTIONS_SEQUENCE] = True
-        # print("Done: %f" %(time.time() - start))
+
+    def build_method_combinations(self, rules):
+        method_combinations = [[]]
+        for rule in rules:
+            if "condition" in rule:
+                if rule["condition"].lower() == "or":
+                    if "methods" in rule:
+                        new_combinations = []
+                        for method in rule["methods"]:
+                            for method_combination in method_combinations:
+                                new_combinations.append(copy.deepcopy(method_combination) + [method])
+                        method_combinations = new_combinations
+            else:
+                for i in range(len(method_combinations)):
+                    method_combinations[i].append(rule)
+            
+        return method_combinations
+
+    def run(self, rule_obj):
+        """
+        Run the five levels check to get the y_score.
+
+        :param rule_obj: the instance of the RuleObject.
+        :return: None
+        """
+        self.quark_analysis.clean_result()
+        self.quark_analysis.crime_description = rule_obj.crime
+        
+        # Level 1: Permissions check
+        if not self.check_permissions(rule_obj):
+            return
+
+        best_run_level = 1
+        best_run = None
+        previous_results = QuarkAnalysisBackup()
+        # Level 2: Check for functions existance
+        api_methods = self.build_method_combinations(rule_obj.api)
+        for api_methods_set in api_methods:
+            self.quark_analysis.clean_result()
+            if (rule_obj.minimum / 20) == best_run_level:
+                break
+            if not self.search_for_methods(api_methods_set, rule_obj):
+                if best_run_level == 1:
+                    best_run = rule_obj
+                    previous_results = self.quark_analysis.backup(previous_results)
+                continue
+            # Level 3: Same parent check
+            mutual_parent_function_list = self.check_for_mutual_parent(rule_obj)
+            if len(mutual_parent_function_list) == 0:
+                if best_run_level == 1:
+                    best_run_level = 2
+                    best_run = rule_obj
+                    previous_results = self.quark_analysis.backup(previous_results)
+                continue
+            # Level 4, 5: Sequence Check and params check
+            self.check_for_sequence_and_params(mutual_parent_function_list, rule_obj)
+            if rule_obj.check_item[self.FUNCTIONS_PARAMETERS_CONNECTED]:
+                best_run_level = 5
+                best_run = rule_obj
+                return
+            if rule_obj.check_item[self.FUNCTIONS_SEQUENCE]:
+                if best_run_level <= 3:
+                    best_run_level = 4
+                    best_run = rule_obj
+                    previous_results = self.quark_analysis.backup(previous_results)
+                continue
+            if best_run_level <= 2:
+                best_run_level = 3
+                best_run = rule_obj
+                previous_results = self.quark_analysis.backup(previous_results)
+        self.quark_analysis.restore(previous_results)
+        rule_obj = best_run
 
     def get_json_report(self):
         """

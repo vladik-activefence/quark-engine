@@ -65,6 +65,34 @@ class QuarkAnalysis:
         self.level_4_result.clear()
         self.level_5_result.clear()
 
+    def backup(self, backup):
+        backup.first_api = self.first_api
+        backup.second_api = self.second_api
+        backup.level_1_result = self.level_1_result
+        backup.level_2_result = self.level_2_result
+        backup.level_3_result = self.level_3_result
+        backup.level_4_result = self.level_4_result
+        backup.level_5_result = self.level_5_result
+        return backup
+
+    def restore(self, backup):
+        self.first_api = backup.first_api
+        self.second_api = backup.second_api
+        self.level_1_result = backup.level_1_result
+        self.level_2_result = backup.level_2_result
+        self.level_3_result = backup.level_3_result
+        self.level_4_result = backup.level_4_result
+        self.level_5_result = backup.level_5_result
+
+    def print(self):
+        print(self.first_api)
+        print(self.second_api)
+        print(self.level_1_result)
+        print(self.level_2_result)
+        print(self.level_3_result)
+        print(self.level_4_result)
+        print(self.level_5_result)
+
 
 if __name__ == "__main__":
     pass
