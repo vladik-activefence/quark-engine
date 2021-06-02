@@ -18,6 +18,7 @@ class QuarkRule:
         "_score",
         "rule_filename",
         "_label",
+        "_minimum"
     ]
 
     def __init__(self, json_filename):
@@ -37,6 +38,10 @@ class QuarkRule:
             self._score = self._json_obj["score"]
             self.rule_filename = os.path.basename(json_filename)
             self._label = self._json_obj["label"]
+            if "minimum" in self._json_obj:
+                self._minimum = self._json_obj["minimum"]
+            else:
+                self._minimum = 0
 
     def __repr__(self):
         return f"<RuleObject-{self.rule_filename}>"
@@ -58,6 +63,15 @@ class QuarkRule:
         :return: a list of given permissions
         """
         return self._permission
+    
+    @property
+    def minimum(self):
+        """
+        Minimum required confidence
+
+        :return: a a minimum required confidence level
+        """
+        return self._minimum
 
     @property
     def api(self):

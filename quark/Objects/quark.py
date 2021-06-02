@@ -230,7 +230,7 @@ class Quark:
         self.quark_analysis.clean_result()
         self.quark_analysis.crime_description = rule_obj.crime
 
-        # Level 1: Permission Check
+        # Level 1: Permissions check
         if self.apkinfo.ret_type == "DEX":
             rule_obj.check_item[self.PERMISSIONS_FOUND] = True
         elif set(rule_obj.permission).issubset(set(self.apkinfo.permissions)):
@@ -238,34 +238,29 @@ class Quark:
         else:
             # Exit if the level 1 stage check fails.
             return
-        # print("Search for methods")
-        start = time.time()
-        # ==> Search for every method
-        for api_method in rule_obj.api:
-        # Level 2: Single Native API Check
+        # Level 2: Check for functions existance
+        api_methods = rule_obj.api
+        for api_method in api_methods:
             api_class_name = api_method["class"]
             api_method_name = api_method["method"]
             api_descriptor = api_method["descriptor"]
             found_method = self.apkinfo.find_method(api_class_name, api_method_name, api_descriptor)
             if found_method is not None:
                 self.quark_analysis.level_2_result.append(found_method)
+        
         # ==> Make sure that we found all the functions
-        if len(self.quark_analysis.level_2_result) < len(rule_obj.api):
+        if len(self.quark_analysis.level_2_result) < len(api_methods):
             # Exit if the level 2 stage check fails.
             return
-        # ==> We have only 1 funciton, no need to check anymore
-        if len(rule_obj.api) == 1:
+        if len(api_methods) == 1:
             rule_obj.check_item[self.FUNCTIONS_FOUND] = True
             rule_obj.check_item[self.FUNCTIONS_SAME_PARENT] = True
             rule_obj.check_item[self.FUNCTIONS_SEQUENCE] = True
             rule_obj.check_item[self.FUNCTIONS_PARAMETERS_CONNECTED] = True
             return
         rule_obj.check_item[self.FUNCTIONS_FOUND] = True
-        # print("Done: %f" %(time.time() - start))
-        # print("Same parent check")
-        start = time.time()
-        # Level 4: Sequence Check
-        # Looking for the first layer of the upper function
+        
+        # Level 3: Same parent check
         mutual_parent_function_list = []
         for method in self.quark_analysis.level_2_result:
             api_xref_from = self.apkinfo.upperfunc(method)
@@ -274,10 +269,9 @@ class Quark:
                 continue
 
             mutual_parent_function_list = self.find_intersection(api_xref_from, mutual_parent_function_list)
-        # print("Done: %f" %(time.time() - start))
-        # print("Sequence check")
         if len(mutual_parent_function_list) > 0:
             rule_obj.check_item[self.FUNCTIONS_SAME_PARENT] = True
+        # Level 4: Sequence Check
         parents_list = list(mutual_parent_function_list)
         rule_obj.check_item[self.FUNCTIONS_SEQUENCE] = False
         for parent_function in parents_list:
@@ -343,6 +337,7 @@ class Quark:
         conf = rule_obj.check_item.count(True)
         weight = rule_obj.get_score(conf)
         score = rule_obj.score
+        detected = confidence >= rule_obj.minimum
 
         # Assign level 1 examine result
         permissions = []
@@ -384,6 +379,7 @@ class Quark:
         crime = {
             "crime": rule_obj.crime,
             "score": score,
+            "detected": detected,
             "weight": weight,
             "confidence": confidence,
             "permissions": permissions,
@@ -399,7 +395,7 @@ class Quark:
         # add the score
         self.quark_analysis.score_sum += score
 
-    def add_table_row(self, name, rule_obj, confidence, score, weight):
+    def add_table_row(self, name, rule_obj, confidence, score, weight, detected):
 
         self.quark_analysis.summary_report_table.add_row([
             name,
@@ -407,6 +403,7 @@ class Quark:
             yellow(confidence),
             score,
             red(weight),
+            detected
         ])
 
     def show_summary_report(self, rule_obj, threshold=None):
@@ -422,14 +419,13 @@ class Quark:
         weight = rule_obj.get_score(conf)
         score = rule_obj.score
         name = rule_obj.rule_filename
+        detected = rule_obj.check_item.count(True) * 20 >= rule_obj.minimum
 
         if threshold:
-
             if rule_obj.check_item.count(True) * 20 >= int(threshold):
-                self.add_table_row(name, rule_obj, confidence, score, weight)
-
+                self.add_table_row(name, rule_obj, confidence, score, weight, detected)
         else:
-            self.add_table_row(name, rule_obj, confidence, score, weight)
+            self.add_table_row(name, rule_obj, confidence, score, weight, detected)
 
         # add the weight
         self.quark_analysis.weight_sum += weight
