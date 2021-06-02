@@ -24,6 +24,7 @@ from quark.utils.weight import Weight
 import pandas as pd
 import os
 import numpy as np
+import time
 
 MAX_SEARCH_LAYER = 3
 CHECK_LIST = "".join(["\t[" + "\u2713" + "]"])
@@ -31,6 +32,11 @@ CHECK_LIST = "".join(["\t[" + "\u2713" + "]"])
 
 class Quark:
     """Quark module is used to check quark's five-stage theory"""
+    PERMISSIONS_FOUND = 0
+    FUNCTIONS_FOUND = 1
+    FUNCTIONS_SAME_PARENT = 2
+    FUNCTIONS_SEQUENCE = 3
+    FUNCTIONS_PARAMETERS_CONNECTED = 4
 
     def __init__(self, apk):
         """
@@ -226,76 +232,78 @@ class Quark:
 
         # Level 1: Permission Check
         if self.apkinfo.ret_type == "DEX":
-            rule_obj.check_item[0] = True
+            rule_obj.check_item[self.PERMISSIONS_FOUND] = True
         elif set(rule_obj.permission).issubset(set(self.apkinfo.permissions)):
-            rule_obj.check_item[0] = True
+            rule_obj.check_item[self.PERMISSIONS_FOUND] = True
         else:
             # Exit if the level 1 stage check fails.
             return
-
+        # print("Search for methods")
+        start = time.time()
+        # ==> Search for every method
+        for api_method in rule_obj.api:
         # Level 2: Single Native API Check
-        api_1_method_name = rule_obj.api[0]["method"]
-        api_1_class_name = rule_obj.api[0]["class"]
-        api_1_descriptor = rule_obj.api[0]["descriptor"]
-
-        api_2_method_name = rule_obj.api[1]["method"]
-        api_2_class_name = rule_obj.api[1]["class"]
-        api_2_descriptor = rule_obj.api[1]["descriptor"]
-
-        first_api = self.apkinfo.find_method(api_1_class_name, api_1_method_name, api_1_descriptor)
-        second_api = self.apkinfo.find_method(api_2_class_name, api_2_method_name, api_2_descriptor)
-
-        if first_api is not None or second_api is not None:
-            rule_obj.check_item[1] = True
-
-            if first_api is not None:
-                first_api = self.apkinfo.find_method(api_1_class_name, api_1_method_name, api_1_descriptor)
-                self.quark_analysis.level_2_result.append(first_api)
-            if second_api is not None:
-                second_api = self.apkinfo.find_method(api_2_class_name, api_2_method_name, api_2_descriptor)
-                self.quark_analysis.level_2_result.append(second_api)
-        else:
+            api_class_name = api_method["class"]
+            api_method_name = api_method["method"]
+            api_descriptor = api_method["descriptor"]
+            found_method = self.apkinfo.find_method(api_class_name, api_method_name, api_descriptor)
+            if found_method is not None:
+                self.quark_analysis.level_2_result.append(found_method)
+        # ==> Make sure that we found all the functions
+        if len(self.quark_analysis.level_2_result) < len(rule_obj.api):
             # Exit if the level 2 stage check fails.
             return
-
-        # Level 3: Both Native API Check
-        if first_api is not None and second_api is not None:
-            self.quark_analysis.first_api = first_api
-            self.quark_analysis.second_api = second_api
-            rule_obj.check_item[2] = True
-
-        else:
-            # Exit if the level 3 stage check fails.
+        # ==> We have only 1 funciton, no need to check anymore
+        if len(rule_obj.api) == 1:
+            rule_obj.check_item[self.FUNCTIONS_FOUND] = True
+            rule_obj.check_item[self.FUNCTIONS_SAME_PARENT] = True
+            rule_obj.check_item[self.FUNCTIONS_SEQUENCE] = True
+            rule_obj.check_item[self.FUNCTIONS_PARAMETERS_CONNECTED] = True
             return
-
+        rule_obj.check_item[self.FUNCTIONS_FOUND] = True
+        # print("Done: %f" %(time.time() - start))
+        # print("Same parent check")
+        start = time.time()
         # Level 4: Sequence Check
         # Looking for the first layer of the upper function
-        first_api_xref_from = self.apkinfo.upperfunc(first_api)
-        second_api_xref_from = self.apkinfo.upperfunc(second_api)
+        mutual_parent_function_list = []
+        for method in self.quark_analysis.level_2_result:
+            api_xref_from = self.apkinfo.upperfunc(method)
+            if mutual_parent_function_list == []:
+                mutual_parent_function_list = self.find_intersection(api_xref_from, api_xref_from)
+                continue
 
-        mutual_parent_function_list = self.find_intersection(first_api_xref_from, second_api_xref_from)
-
-        if mutual_parent_function_list is not None:
-
-            for parent_function in mutual_parent_function_list:
+            mutual_parent_function_list = self.find_intersection(api_xref_from, mutual_parent_function_list)
+        # print("Done: %f" %(time.time() - start))
+        # print("Sequence check")
+        if len(mutual_parent_function_list) > 0:
+            rule_obj.check_item[self.FUNCTIONS_SAME_PARENT] = True
+        parents_list = list(mutual_parent_function_list)
+        rule_obj.check_item[self.FUNCTIONS_SEQUENCE] = False
+        for parent_function in parents_list:
+            sequence_found = True
+            for function_index in range(len(self.quark_analysis.level_2_result) - 1):
+                first_api = self.quark_analysis.level_2_result[function_index]
+                second_api = self.quark_analysis.level_2_result[function_index + 1]
                 first_wrapper = []
                 second_wrapper = []
-
                 self.find_previous_method(first_api, parent_function, first_wrapper)
                 self.find_previous_method(second_api, parent_function, second_wrapper)
-
-                if self.check_sequence(parent_function, first_wrapper, second_wrapper):
-                    rule_obj.check_item[3] = True
-                    self.quark_analysis.level_4_result.append(parent_function)
-
+                if not self.check_sequence(parent_function, first_wrapper, second_wrapper):
+                    sequence_found = False
+                else:
                     # Level 5: Handling The Same Register Check
+                    self.quark_analysis.first_api = first_api
+                    self.quark_analysis.second_api = second_api
                     if self.check_parameter(parent_function, first_wrapper, second_wrapper):
-                        rule_obj.check_item[4] = True
+                        rule_obj.check_item[self.FUNCTIONS_PARAMETERS_CONNECTED] = True
                         self.quark_analysis.level_5_result.append(parent_function)
-
-        else:
-            # Exit if the level 4 stage check fails.
-            return
+        
+            if sequence_found:
+                # print("Sequence found")
+                self.quark_analysis.level_4_result.append(parent_function)
+                rule_obj.check_item[self.FUNCTIONS_SEQUENCE] = True
+        # print("Done: %f" %(time.time() - start))
 
     def get_json_report(self):
         """
@@ -504,33 +512,31 @@ class Quark:
         if rule_obj.check_item[0]:
 
             print(red(CHECK_LIST), end="")
-            print(green(bold("1.Permission Request")), end="")
+            print(green(bold("1. Permissions Found")), end="")
             print("")
 
             for permission in rule_obj.permission:
                 print(f"\t\t {permission}")
         if rule_obj.check_item[1]:
             print(red(CHECK_LIST), end="")
-            print(green(bold("2.Native API Usage")), end="")
+            print(green(bold("2. Functions Found")), end="")
             print("")
 
             for api in self.quark_analysis.level_2_result:
                 print(f"\t\t ({api.class_name}, {api.name})")
         if rule_obj.check_item[2]:
+
             print(red(CHECK_LIST), end="")
-            print(green(bold("3.Native API Combination")), end="")
+            print(green(bold("3. Functions have the same parent")), end="")
 
             print("")
-            print(
-                f"\t\t ({rule_obj.api[0]['class']}, {rule_obj.api[0]['method']})",
-            )
-            print(
-                f"\t\t ({rule_obj.api[1]['class']}, {rule_obj.api[1]['method']})",
-            )
+            print(f"\t\t Sequence show up in:")
+            for seq_method in self.quark_analysis.level_4_result:
+                print(f"\t\t {seq_method.full_name}")
         if rule_obj.check_item[3]:
 
             print(red(CHECK_LIST), end="")
-            print(green(bold("4.Native API Sequence")), end="")
+            print(green(bold("4. Functions appear in the right sequence")), end="")
 
             print("")
             print(f"\t\t Sequence show up in:")
@@ -539,7 +545,7 @@ class Quark:
         if rule_obj.check_item[4]:
 
             print(red(CHECK_LIST), end="")
-            print(green(bold("5.Native API Use Same Parameter")), end="")
+            print(green(bold("5. Functions are related by arguments")), end="")
             print("")
             for seq_operation in self.quark_analysis.level_5_result:
                 print(f"\t\t {seq_operation.full_name}")
